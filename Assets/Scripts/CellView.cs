@@ -15,7 +15,7 @@ public class CellView : MonoBehaviour, IPointerDownHandler, IPointerEnterHandler
     [Header("Colors")]
     [SerializeField] private Color normalColor    = new Color(0f, 0f, 0f, 0f);          // 기본: 완전 투명
     [SerializeField] private Color selectionColor = new Color(0.30f, 0.55f, 0.98f, 0.35f); // 선택 하이라이트
-    [SerializeField] private Color hintColor      = new Color(1f, 1f, 1f, 0.20f);       // 힌트 하이라이트
+    [SerializeField] private Color hintColor      = new Color(0.25f, 0.90f, 0.80f, 0.40f);
 
     [Header("Text Color")]
     [SerializeField] private Color numberColor    = new Color(0.95f, 0.96f, 1f, 1f);    // 밝은 숫자 색 (다크모드용)
@@ -97,9 +97,9 @@ public class CellView : MonoBehaviour, IPointerDownHandler, IPointerEnterHandler
         }
 
         if (isSelected)
-            transform.localScale = Vector3.one * 1.08f;
+            transform.localScale = Vector3.one * 1.10f;
         else if (isHint)
-            transform.localScale = Vector3.one * 1.04f;
+            transform.localScale = Vector3.one * 1.08f;
         else
             transform.localScale = Vector3.one;
     }

@@ -1,13 +1,15 @@
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
-using UnityEngine.SceneManagement;
 
 public class GameOverUI : MonoBehaviour
 {
     [Header("References")]
     [SerializeField] private GameManager gameManager;
-    [SerializeField] private GameObject panel;
+
+    [SerializeField] private GameObject gameOverRoot;   // GameOver 패널 루트
+    [SerializeField] private GameObject inGameUIRoot;   // 보드 + HUD 루트
+
     [SerializeField] private TMP_Text finalScoreText;
     [SerializeField] private TMP_Text bestScoreText;
     [SerializeField] private Button retryButton;
@@ -20,17 +22,12 @@ public class GameOverUI : MonoBehaviour
         if (gameManager == null)
         {
             Debug.LogError("GameOverUI: GameManager를 찾을 수 없습니다.");
+            enabled = false;
             return;
         }
 
-        // 게임 시작 시 패널은 꺼두기
-        if (panel != null)
-            panel.SetActive(false);
-
-        // 이벤트 구독
         gameManager.OnGameOver += HandleGameOver;
 
-        // 버튼 클릭 리스너 연결
         if (retryButton != null)
             retryButton.onClick.AddListener(OnRetryClicked);
     }
@@ -46,8 +43,11 @@ public class GameOverUI : MonoBehaviour
 
     private void HandleGameOver(int finalScore)
     {
-        if (panel != null)
-            panel.SetActive(true);
+        if (inGameUIRoot != null)
+            inGameUIRoot.SetActive(false);
+
+        if (gameOverRoot != null)
+            gameOverRoot.SetActive(true);
 
         if (finalScoreText != null)
             finalScoreText.text = $"Score : {finalScore}";
@@ -58,8 +58,13 @@ public class GameOverUI : MonoBehaviour
 
     private void OnRetryClicked()
     {
-        // 씬 전체 다시 로드 → 진짜 완전 처음 상태로
-        var scene = SceneManager.GetActiveScene();
-        SceneManager.LoadScene(scene.buildIndex);
+        if (gameManager != null)
+            gameManager.RestartRun();
+
+        if (inGameUIRoot != null)
+            inGameUIRoot.SetActive(true);
+
+        if (gameOverRoot != null)
+            gameOverRoot.SetActive(false);
     }
 }

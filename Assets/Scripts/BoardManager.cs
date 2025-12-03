@@ -1,224 +1,542 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
+// ========================================
+// BoardManager v14 - 권장 설정 버전
+// 밸런스 잡힌 보드 생성 + 성능 최적화
+// ========================================
+
 public class BoardManager : MonoBehaviour
 {
-    private struct NumberNode
-    {
-        public int X;
-        public int Y;
-        public int Value;
-    }
-    [Header("Difficulty / Easy pair limit")]
-    // 상하좌우 바로 붙어 있는 두 칸만으로 합 10이 되는 “쉬운 쌍”의 최대 개수
-    // 값이 작을수록 난이도가 올라감 (권장: 0~3)
-    [SerializeField] private int maxEasyAdjacentPairs = 4;
-
-    [Header("Generation Safety")]
-    [SerializeField, Range(1, 200)]
-    private int maxGenerationRetry = 20;   // 보드 재생성 최대 시도 횟수
-
-    [Header("Input Options")]
-    [SerializeField]
-    private bool lockAxisChange = false;   // true면 가로/세로 축 잠금
-
-    private enum AxisLock { None, Horizontal, Vertical }
-    private AxisLock currentAxis = AxisLock.None;
+    // =========================
+    //  인스펙터 설정값
+    // =========================
 
     [Header("Board Settings")]
     [Range(2, 10)]
-    [SerializeField] private int n = 3;    // 보드 한 변 (3x3, 4x4, ...)
-
-    private const int k = 9;               // 숫자 범위: 1~9 고정
+    [SerializeField] private int n = 3;
+    private const int MaxValue = 9;
+    private const int TARGET_SUM = 10;
+    private const int MIN_NUMBERS = 2;
+    
+    [Header("Board Generation Balance")]
+    [Tooltip("작은 보드(~6x6): 자연 생성 시 최소 경로 개수")]
+    [Range(1, 10)]
+    [SerializeField] private int minPathsRequired = 3;
+    
+    [Tooltip("큰 보드(7x7+): 의도적으로 심을 경로 개수")]
+    [Range(3, 10)]
+    [SerializeField] private int guaranteedPathsForLargeBoard = 4;
+    
+    [Tooltip("보드 생성 최대 시도 횟수")]
+    [Range(10, 100)]
+    [SerializeField] private int maxGenerationAttempts = 30;
+    
+    [Tooltip("보드 생성 타임아웃 (초)")]
+    [Range(0.05f, 1f)]
+    [SerializeField] private float generationTimeout = 0.15f;
 
     [Header("References")]
     [SerializeField] private CellView cellPrefab;
     [SerializeField] private RectTransform boardRoot;
+    [SerializeField] private RectTransform topHUD;
+
+    [Header("Layout")]
+    [Tooltip("보드 상단과 HUD 사이의 거리 (높을수록 HUD가 위로)")]
+    [Range(0f, 100f)]
+    [SerializeField] private float hudMargin = 30f;
+
+    [Header("Input Options")]
+    [SerializeField] private bool lockAxisChange = false;
+
+    [Header("Performance")]
+    [SerializeField] private float searchTimeoutSeconds = 0.5f;
+    [SerializeField] private bool useQuickHint = false;
+
+    // =========================
+    //  내부 상태
+    // =========================
 
     private GridLayoutGroup gridLayout;
+    private CellView[,] cells;
+    private int[,] boardValues;
 
+    private readonly List<CellView> currentPath = new List<CellView>();
+    private bool isDragging;
+    private int pathSum;
+    private int pathNumberCount;
+
+    private enum AxisLock { None, Horizontal, Vertical }
+    private AxisLock currentAxis = AxisLock.None;
+
+    // 힌트
     private List<CellView> currentHintCells;
     private Coroutine hintCoroutine;
 
-    private CellView[,] cells;
-    private int[,] boardValues;            // -1 = 공백, 1~9 = 숫자
-
-    // 현재 드래그 경로
-    private readonly List<CellView> currentPath = new List<CellView>();
-    private bool isDragging = false;
-    private int pathNumberCount = 0;       // 경로 안 숫자 개수
-    private int pathSum = 0;               // 경로 안 숫자 합
-
-    // DFS 탐색 제한(런타임용)
-    private int dfsStepCount;
-    private const int dfsStepLimit = int.MaxValue;
-    private bool[,] dfsVisited;
+    // 캐싱
+    private bool hasValidMoveCache;
+    private bool hasValidMoveCacheValid;
 
     // 이벤트
     public event Action<List<CellView>> OnPathUpdated;
     public event Action<List<CellView>> OnCellsRemoved;
     public event Action OnNoMoreMoves;
 
+    // =========================
+    //  Unity 라이프사이클
+    // =========================
+
     private void Awake()
     {
+        // GridLayout 찾기
         if (boardRoot != null)
             gridLayout = boardRoot.GetComponent<GridLayoutGroup>();
+        
+        // TopHUD가 할당 안되어있으면 자동으로 찾기
+        if (topHUD == null)
+        {
+            topHUD = GameObject.Find("TopHUD")?.GetComponent<RectTransform>();
+            
+            if (topHUD == null && boardRoot != null)
+            {
+                var parent = boardRoot.parent;
+                topHUD = parent?.Find("TopHUD")?.GetComponent<RectTransform>();
+            }
+            
+            if (topHUD != null)
+                Debug.Log($"[BoardManager] TopHUD auto-found: {topHUD.name}");
+        }
     }
 
     private void Update()
     {
-        // 마우스/터치 버튼이 올라가면 드래그 종료
         if (isDragging && !Input.GetMouseButton(0))
         {
             EndDrag();
         }
     }
 
-    // =====================================================
-    // 외부(게임매니저)에서 호출하는 보드 초기화 API
-    // =====================================================
+    // =========================
+    //  외부에서 호출: 보드 세팅
+    // =========================
 
-    /// <summary>
-    /// GameManager에서 보드 크기를 지정할 때 쓸 메서드
-    /// ex) 3 → 3x3, 4 → 4x4 ...
-    /// </summary>
     public void SetupBoardWithSize(int size)
     {
         n = Mathf.Clamp(size, 2, 10);
 
+        // 보드 크기별 권장 설정 자동 적용
+        ApplyRecommendedSettings();
+
         cells = new CellView[n, n];
         boardValues = new int[n, n];
 
-        // ▼ DFS 방문 배열도 보드 크기에 맞춰 준비
-        dfsVisited = new bool[n, n];
-
-        GenerateBoardValues();
+        GenerateBoardValuesUntilValid();
         CreateVisualBoard();
+        ApplyBoardLayout();
+        InvalidateCache();
     }
 
-    // =====================================================
-    // 보드 생성 (합 10 그룹 기반)
-    // =====================================================
-
-    private void GenerateBoardValues()
+    /// <summary>
+    /// 보드 크기에 따른 권장 설정 자동 적용
+    /// </summary>
+    private void ApplyRecommendedSettings()
     {
-        bool success = false;
-        Debug.Log("GenerateBoardValues START");
-
-        // 큰 보드는 재시도 횟수 줄이기 (선택 사항)
-        int retryLimit = maxGenerationRetry;
-        if (n >= 7)
-            retryLimit = Mathf.Min(maxGenerationRetry, 5);
-
-        for (int attempt = 0; attempt < retryLimit; attempt++)
+        if (n <= 3)
         {
-            // 1) 완전 랜덤 보드 생성
-            GeneratePureRandomFullBoard();
-            Debug.Log($"Generate attempt {attempt}");
+            minPathsRequired = 2;
+        }
+        else if (n <= 5)
+        {
+            minPathsRequired = 3;
+        }
+        else if (n <= 6)
+        {
+            minPathsRequired = 4;
+        }
+        else
+        {
+            // 7x7 이상: 의도적 경로 심기 사용
+            // 보드 크기에 비례해서 경로 개수 조정
+            guaranteedPathsForLargeBoard = Mathf.Max(3, n / 2);
+            Debug.Log($"[BoardManager] {n}x{n} board → {guaranteedPathsForLargeBoard} guaranteed paths will be planted");
+            return;
+        }
+        
+        Debug.Log($"[BoardManager] {n}x{n} board → minPaths: {minPathsRequired}");
+    }
 
-            // 2) 난이도 조절 전에 합10 경로 1개 이상 있는지 빠른 체크
-            dfsStepCount = 0;
-            if (!HasAtLeastNValidMoves(1))
-                continue;
+    // =========================
+    //  보드 생성
+    // =========================
 
-            // 3) 인접 쉬운 쌍 줄이기 (n <= 4면 내부에서 바로 return)
-            LimitEasyPairs();
+    private void GenerateBoardValuesUntilValid()
+    {
+        var startTime = Time.realtimeSinceStartup;
 
-            // 4) 보드 크기에 따라 조건 체크
-            if (n <= 3)
+        // 큰 보드는 의도적 경로 심기 전략 사용
+        if (n >= 7)
+        {
+            GenerateLargeBoardWithGuaranteedPaths();
+            float elapsed = Time.realtimeSinceStartup - startTime;
+            Debug.Log($"[Generation] Large board ({n}x{n}) generated with {guaranteedPathsForLargeBoard} guaranteed paths ({elapsed:F3}s)");
+            return;
+        }
+
+        // 작은 보드는 자연 생성 + 검증
+        int attempt = 0;
+        int bestPathCount = 0;
+        int[,] bestBoard = null;
+
+        for (attempt = 0; attempt < maxGenerationAttempts; attempt++)
+        {
+            if (Time.realtimeSinceStartup - startTime > generationTimeout)
             {
-                // 3x3: 이론상 최소 3번 지울 수 있는 보드만 통과
-                if (HasAtLeastNClearablePathsForGeneration(3))
+                Debug.LogWarning($"[Generation] Timeout after {attempt} attempts");
+                break;
+            }
+
+            FillBoardRandom();
+            int pathCount = CountAllValidPaths();
+
+            if (pathCount >= minPathsRequired)
+            {
+                float elapsed = Time.realtimeSinceStartup - startTime;
+                Debug.Log($"[Generation] ✓ Found {pathCount} paths in {attempt + 1} attempts ({elapsed:F3}s)");
+                return;
+            }
+
+            if (pathCount > bestPathCount)
+            {
+                bestPathCount = pathCount;
+                bestBoard = (int[,])boardValues.Clone();
+            }
+        }
+
+        if (bestBoard != null && bestPathCount > 0)
+        {
+            Array.Copy(bestBoard, boardValues, bestBoard.Length);
+            float elapsed = Time.realtimeSinceStartup - startTime;
+            Debug.LogWarning($"[Generation] Using best board ({bestPathCount} paths, target: {minPathsRequired}) - {elapsed:F3}s");
+        }
+        else
+        {
+            Debug.LogError($"[Generation] Failed - using fallback board");
+        }
+    }
+
+    /// <summary>
+    /// 큰 보드(7x7+)용: 랜덤 생성 + 의도적으로 경로 심기
+    /// </summary>
+    private void GenerateLargeBoardWithGuaranteedPaths()
+    {
+        // 1단계: 완전 랜덤 보드 생성
+        FillBoardRandom();
+
+        // 2단계: 의도적으로 N개의 합10 경로 심기
+        int pathsPlanted = 0;
+        int maxAttempts = guaranteedPathsForLargeBoard * 3; // 여유있게
+
+        for (int attempt = 0; attempt < maxAttempts && pathsPlanted < guaranteedPathsForLargeBoard; attempt++)
+        {
+            if (TryPlantPath())
+            {
+                pathsPlanted++;
+            }
+        }
+
+        Debug.Log($"[Generation] Planted {pathsPlanted}/{guaranteedPathsForLargeBoard} guaranteed paths");
+    }
+
+    /// <summary>
+    /// 랜덤한 위치에 합10이 되는 경로를 의도적으로 심는다
+    /// </summary>
+    private bool TryPlantPath()
+    {
+        // 랜덤한 시작점 선택
+        int startX = UnityEngine.Random.Range(0, n);
+        int startY = UnityEngine.Random.Range(0, n);
+
+        // 중앙 홀이면 스킵
+        if (n % 2 == 1 && startX == n / 2 && startY == n / 2)
+            return false;
+
+        // 경로 길이 2~4 중 랜덤
+        int pathLength = UnityEngine.Random.Range(2, 5);
+
+        // 목표 합 10을 pathLength개로 분배
+        List<int> numbers = GenerateNumbersForSum(TARGET_SUM, pathLength);
+        if (numbers == null || numbers.Count == 0)
+            return false;
+
+        // 시작점부터 경로 만들기
+        List<Vector2Int> path = new List<Vector2Int>();
+        path.Add(new Vector2Int(startX, startY));
+
+        int currentX = startX;
+        int currentY = startY;
+
+        // 랜덤 워크로 경로 확장
+        for (int i = 1; i < pathLength; i++)
+        {
+            List<Vector2Int> candidates = new List<Vector2Int>();
+
+            // 4방향 중 갈 수 있는 곳
+            int[] dx = { 1, -1, 0, 0 };
+            int[] dy = { 0, 0, 1, -1 };
+
+            for (int dir = 0; dir < 4; dir++)
+            {
+                int nx = currentX + dx[dir];
+                int ny = currentY + dy[dir];
+
+                if (nx >= 0 && nx < n && ny >= 0 && ny < n)
                 {
-                    success = true;
-                    Debug.Log("GenerateBoardValues END (3x3, >=3 clears)");
-                    break;
+                    var pos = new Vector2Int(nx, ny);
+                    if (!path.Contains(pos))
+                    {
+                        // 중앙 홀이 아니면 후보 추가
+                        if (!(n % 2 == 1 && nx == n / 2 && ny == n / 2))
+                        {
+                            candidates.Add(pos);
+                        }
+                    }
                 }
             }
-            else if (n == 4)
+
+            if (candidates.Count == 0)
+                return false; // 더 이상 갈 곳이 없음
+
+            var next = candidates[UnityEngine.Random.Range(0, candidates.Count)];
+            path.Add(next);
+            currentX = next.x;
+            currentY = next.y;
+        }
+
+        // 경로에 숫자 배치
+        for (int i = 0; i < path.Count && i < numbers.Count; i++)
+        {
+            boardValues[path[i].x, path[i].y] = numbers[i];
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 목표 합을 N개의 숫자로 분배 (1~9 범위)
+    /// </summary>
+    private List<int> GenerateNumbersForSum(int targetSum, int count)
+    {
+        if (count < 2 || count > targetSum || targetSum > count * MaxValue)
+            return null;
+
+        List<int> result = new List<int>();
+
+        // 일단 각각 1로 시작
+        for (int i = 0; i < count; i++)
+            result.Add(1);
+
+        int remaining = targetSum - count;
+
+        // 랜덤하게 분배
+        for (int i = 0; i < remaining; i++)
+        {
+            int idx = UnityEngine.Random.Range(0, count);
+            if (result[idx] < MaxValue)
             {
-                // 4x4: 최소 4번
-                if (HasAtLeastNClearablePathsForGeneration(4))
-                {
-                    success = true;
-                    Debug.Log("GenerateBoardValues END (4x4, >=4 clears)");
-                    break;
-                }
-            }
-            else if (n == 5)
-            {
-                // 5x5: 최소 5번
-                if (HasAtLeastNClearablePathsForGeneration(5))
-                {
-                    success = true;
-                    Debug.Log("GenerateBoardValues END (5x5, >=5 clears)");
-                    break;
-                }
+                result[idx]++;
             }
             else
             {
-                // 6 이상은 "경로 1개 이상"이면 통과
-                dfsStepCount = 0;
-                if (HasAtLeastNValidMoves(1))
+                // 꽉 찬 칸이면 다른 곳에 분배
+                for (int j = 0; j < count; j++)
                 {
-                    success = true;
-                    Debug.Log($"GenerateBoardValues END ({n}x{n}, at least one path)");
-                    break;
+                    if (result[j] < MaxValue)
+                    {
+                        result[j]++;
+                        break;
+                    }
                 }
             }
         }
 
-        if (!success)
+        // 셔플
+        for (int i = result.Count - 1; i > 0; i--)
         {
-            Debug.LogWarning(
-                "GenerateBoardValues: fallback to last generated board " +
-                "(may be unsolvable or have fewer clears than desired)."
-            );
-        }
-    }
-    // 1~k 완전 랜덤 보드 생성 (홀수 크기일 때는 중앙 1칸은 영구 공백)
-    private void GeneratePureRandomFullBoard()
-    {
-        // 일단 전부 공백(-1)으로 초기화
-        for (int y = 0; y < n; y++)
-        {
-            for (int x = 0; x < n; x++)
-            {
-                boardValues[x, y] = -1;
-            }
+            int j = UnityEngine.Random.Range(0, i + 1);
+            int temp = result[i];
+            result[i] = result[j];
+            result[j] = temp;
         }
 
-        // 홀수 보드라면 중앙 칸 하나는 비워 둠
-        Vector2Int? hole = GetCenterHolePosition();
-
-        // 나머지 칸은 1~k 랜덤 숫자
-        for (int y = 0; y < n; y++)
-        {
-            for (int x = 0; x < n; x++)
-            {
-                if (hole.HasValue && hole.Value.x == x && hole.Value.y == y)
-                    continue;                   // 중앙 홀은 그대로 공백
-
-                boardValues[x, y] = UnityEngine.Random.Range(1, k + 1);
-            }
-        }
+        return result;
     }
 
-    private Vector2Int? GetCenterHolePosition()
+    private void FillBoardRandom()
     {
+        // 홀수 보드면 중앙 1칸만 비워두기
+        Vector2Int? centerHole = null;
         if (n % 2 == 1)
         {
             int c = n / 2;
-            return new Vector2Int(c, c);
+            centerHole = new Vector2Int(c, c);
         }
-        return null;
+
+        // 모든 칸을 1~9 랜덤 숫자로 채우기 (중앙 제외)
+        for (int y = 0; y < n; y++)
+        {
+            for (int x = 0; x < n; x++)
+            {
+                if (centerHole.HasValue && centerHole.Value.x == x && centerHole.Value.y == y)
+                {
+                    // 중앙은 공백
+                    boardValues[x, y] = -1;
+                }
+                else
+                {
+                    // 나머지는 모두 숫자
+                    boardValues[x, y] = UnityEngine.Random.Range(1, MaxValue + 1);
+                }
+            }
+        }
     }
 
-    // =====================================================
-    // 보드 비주얼 생성
-    // =====================================================
+    /// <summary>
+    /// 보드에 있는 모든 유효한 경로의 개수를 센다
+    /// </summary>
+    private int CountAllValidPaths()
+    {
+        if (boardValues == null)
+            return 0;
+
+        // 큰 보드는 경로 세기 스킵 (너무 무거움)
+        if (n >= 8)
+        {
+            // 빠른 검증: 경로가 1개라도 있는지만 확인
+            return HasAnyValidMove() ? 1 : 0;
+        }
+
+        var startTime = Time.realtimeSinceStartup;
+        const float TIMEOUT = 0.05f;
+        
+        // 보드 크기별 목표 조정
+        int maxPathsToFind = n <= 3 ? 5 : (n <= 5 ? 10 : 15);
+        
+        HashSet<string> uniquePaths = new HashSet<string>();
+        bool[,] visited = new bool[n, n];
+        List<Vector2Int> currentPath = new List<Vector2Int>();
+
+        for (int y = 0; y < n; y++)
+        {
+            for (int x = 0; x < n; x++)
+            {
+                // 타임아웃 체크
+                if (Time.realtimeSinceStartup - startTime > TIMEOUT)
+                {
+                    Debug.Log($"[CountPaths] Timeout - found {uniquePaths.Count} paths");
+                    return uniquePaths.Count;
+                }
+
+                // 충분한 경로를 찾았으면 조기 종료
+                if (uniquePaths.Count >= maxPathsToFind)
+                {
+                    return uniquePaths.Count;
+                }
+
+                int value = boardValues[x, y];
+                if (value <= 0 || value > TARGET_SUM)
+                    continue;
+
+                Array.Clear(visited, 0, visited.Length);
+                currentPath.Clear();
+
+                DFSCountPaths(x, y, value, 1, visited, currentPath, uniquePaths);
+            }
+        }
+
+        return uniquePaths.Count;
+    }
+
+    private void DFSCountPaths(
+        int x, int y,
+        int currentSum,
+        int numberCount,
+        bool[,] visited,
+        List<Vector2Int> currentPath,
+        HashSet<string> uniquePaths)
+    {
+        visited[x, y] = true;
+        currentPath.Add(new Vector2Int(x, y));
+
+        if (currentSum == TARGET_SUM && numberCount >= MIN_NUMBERS)
+        {
+            string pathKey = PathToString(currentPath);
+            uniquePaths.Add(pathKey);
+
+            visited[x, y] = false;
+            currentPath.RemoveAt(currentPath.Count - 1);
+            return;
+        }
+
+        if (currentSum >= TARGET_SUM)
+        {
+            visited[x, y] = false;
+            currentPath.RemoveAt(currentPath.Count - 1);
+            return;
+        }
+
+        int[] dx = { 1, -1, 0, 0 };
+        int[] dy = { 0, 0, 1, -1 };
+
+        for (int dir = 0; dir < 4; dir++)
+        {
+            int nx = x + dx[dir];
+            int ny = y + dy[dir];
+
+            if (nx < 0 || nx >= n || ny < 0 || ny >= n)
+                continue;
+            if (visited[nx, ny])
+                continue;
+
+            int nextValue = boardValues[nx, ny];
+
+            if (nextValue <= 0)
+            {
+                DFSCountPaths(nx, ny, currentSum, numberCount, visited, currentPath, uniquePaths);
+            }
+            else
+            {
+                int nextSum = currentSum + nextValue;
+                if (nextSum <= TARGET_SUM)
+                {
+                    DFSCountPaths(nx, ny, nextSum, numberCount + 1, visited, currentPath, uniquePaths);
+                }
+            }
+        }
+
+        visited[x, y] = false;
+        currentPath.RemoveAt(currentPath.Count - 1);
+    }
+
+    private string PathToString(List<Vector2Int> path)
+    {
+        var numbers = new List<string>();
+        foreach (var pos in path)
+        {
+            int value = boardValues[pos.x, pos.y];
+            if (value > 0)
+            {
+                numbers.Add($"{pos.x},{pos.y}:{value}");
+            }
+        }
+        return string.Join("|", numbers);
+    }
+
+    // =========================
+    //  비주얼 생성
+    // =========================
 
     private void CreateVisualBoard()
     {
@@ -228,11 +546,8 @@ public class BoardManager : MonoBehaviour
             gridLayout.constraintCount = n;
         }
 
-        // 기존 자식 제거
         for (int i = boardRoot.childCount - 1; i >= 0; i--)
-        {
             Destroy(boardRoot.GetChild(i).gameObject);
-        }
 
         cells = new CellView[n, n];
 
@@ -240,7 +555,7 @@ public class BoardManager : MonoBehaviour
         {
             for (int x = 0; x < n; x++)
             {
-                CellView cell = Instantiate(cellPrefab, boardRoot);
+                var cell = Instantiate(cellPrefab, boardRoot);
                 int v = boardValues[x, y];
                 cell.Init(this, x, y, v);
                 cells[x, y] = cell;
@@ -248,13 +563,41 @@ public class BoardManager : MonoBehaviour
         }
     }
 
-    // =====================================================
-    // 드래그 입력 처리 + 경로 관리
-    // =====================================================
+    private void ApplyBoardLayout()
+    {
+        if (boardRoot == null || gridLayout == null)
+            return;
+
+        float cellSize = gridLayout.cellSize.x;
+        float spacing = gridLayout.spacing.x;
+        float boardSize = n * cellSize + (n - 1) * spacing;
+        
+        // boardRoot 설정
+        boardRoot.sizeDelta = new Vector2(boardSize, boardSize);
+        boardRoot.anchorMin = new Vector2(0.5f, 0.5f);
+        boardRoot.anchorMax = new Vector2(0.5f, 0.5f);
+        boardRoot.pivot = new Vector2(0.5f, 0.5f);
+        boardRoot.anchoredPosition = Vector2.zero;
+        
+        // HUD 설정
+        if (topHUD != null)
+        {
+            topHUD.anchorMin = new Vector2(0.5f, 0.5f);
+            topHUD.anchorMax = new Vector2(0.5f, 0.5f);
+            topHUD.pivot = new Vector2(0.5f, 0.5f);
+            
+            float boardTopOffset = boardSize * 0.5f;
+            float hudY = boardTopOffset + hudMargin;
+            topHUD.anchoredPosition = new Vector2(0f, hudY);
+        }
+    }
+
+    // =========================
+    //  입력 처리
+    // =========================
 
     public void OnCellPointerDown(CellView cell)
     {
-        // 힌트가 떠 있는 상태에서 유저가 직접 드래그를 시작하면 힌트 제거
         CancelHint();
 
         if (cell == null || !cell.HasNumber)
@@ -267,8 +610,8 @@ public class BoardManager : MonoBehaviour
 
     public void OnCellPointerEnter(CellView cell)
     {
-        if (!isDragging) return;
-        if (cell == null) return;
+        if (!isDragging || cell == null)
+            return;
 
         TryAddCellToPath(cell);
     }
@@ -280,19 +623,11 @@ public class BoardManager : MonoBehaviour
 
         currentPath.Clear();
         isDragging = false;
-
-        pathNumberCount = 0;
         pathSum = 0;
+        pathNumberCount = 0;
         currentAxis = AxisLock.None;
 
         OnPathUpdated?.Invoke(currentPath);
-    }
-
-    private bool IsAdjacent(CellView a, CellView b)
-    {
-        int dx = Mathf.Abs(a.X - b.X);
-        int dy = Mathf.Abs(a.Y - b.Y);
-        return dx + dy == 1; // 상하좌우 한 칸
     }
 
     private bool IsInside(int x, int y)
@@ -300,15 +635,18 @@ public class BoardManager : MonoBehaviour
         return x >= 0 && x < n && y >= 0 && y < n;
     }
 
-    /// <summary>
-    /// 실제로 경로에 셀을 추가 (대각선 보정/축 잠금은 TryAddCellToPath에서 처리)
-    /// </summary>
+    private bool IsAdjacent(CellView a, CellView b)
+    {
+        int dx = Mathf.Abs(a.X - b.X);
+        int dy = Mathf.Abs(a.Y - b.Y);
+        return dx + dy == 1;
+    }
+
     private bool AddCellToPathCore(CellView cell)
     {
         if (cell == null)
             return false;
 
-        // 숫자 칸은 재방문 금지
         if (cell.HasNumber && currentPath.Contains(cell))
             return false;
 
@@ -320,20 +658,13 @@ public class BoardManager : MonoBehaviour
 
         currentPath.Add(cell);
         cell.SetHighlight(true);
-
         OnPathUpdated?.Invoke(currentPath);
         return true;
     }
 
-    /// <summary>
-    /// 셀 추가 또는 백트래킹 + 대각선 브리지 + 축 잠금
-    /// </summary>
     private bool TryAddCellToPath(CellView cell)
     {
-        if (cell == null)
-            return false;
-
-        // 1) 백트래킹
+        // 백트래킹
         if (currentPath.Count > 0)
         {
             int idx = currentPath.IndexOf(cell);
@@ -347,7 +678,7 @@ public class BoardManager : MonoBehaviour
             }
         }
 
-        // 2) 대각선 브리지 (last → bridge 공백 → cell)
+        // 대각선 브리지
         if (currentPath.Count > 0)
         {
             var last = currentPath[currentPath.Count - 1];
@@ -397,7 +728,7 @@ public class BoardManager : MonoBehaviour
             }
         }
 
-        // 3) 인접 검증 (브리지 추가 후에는 상하좌우 인접이어야 함)
+        // 인접 체크
         if (currentPath.Count > 0)
         {
             var lastCell = currentPath[currentPath.Count - 1];
@@ -405,7 +736,7 @@ public class BoardManager : MonoBehaviour
                 return false;
         }
 
-        // 4) 축 잠금
+        // 축 잠금
         if (lockAxisChange && currentPath.Count > 0)
         {
             var lastCell = currentPath[currentPath.Count - 1];
@@ -416,18 +747,13 @@ public class BoardManager : MonoBehaviour
             {
                 if (currentAxis == AxisLock.None)
                 {
-                    if (dx != 0)
-                        currentAxis = AxisLock.Horizontal;
-                    else if (dy != 0)
-                        currentAxis = AxisLock.Vertical;
+                    if (dx != 0) currentAxis = AxisLock.Horizontal;
+                    else if (dy != 0) currentAxis = AxisLock.Vertical;
                 }
                 else
                 {
-                    if (currentAxis == AxisLock.Horizontal && dy != 0)
-                        return false;
-
-                    if (currentAxis == AxisLock.Vertical && dx != 0)
-                        return false;
+                    if (currentAxis == AxisLock.Horizontal && dy != 0) return false;
+                    if (currentAxis == AxisLock.Vertical && dx != 0) return false;
                 }
             }
         }
@@ -453,14 +779,12 @@ public class BoardManager : MonoBehaviour
 
     private void RecalculatePathState()
     {
-        pathNumberCount = 0;
         pathSum = 0;
+        pathNumberCount = 0;
 
         foreach (var cell in currentPath)
         {
-            if (!cell.HasNumber)
-                continue;
-
+            if (!cell.HasNumber) continue;
             pathNumberCount++;
             pathSum += cell.Value;
         }
@@ -485,11 +809,11 @@ public class BoardManager : MonoBehaviour
                     cell.SetValue(-1);
                     removed.Add(cell);
                 }
-
                 cell.SetHighlight(false);
             }
 
             OnCellsRemoved?.Invoke(removed);
+            InvalidateCache();
             CheckEndConditions();
         }
         else
@@ -499,8 +823,8 @@ public class BoardManager : MonoBehaviour
         }
 
         currentPath.Clear();
-        pathNumberCount = 0;
         pathSum = 0;
+        pathNumberCount = 0;
         currentAxis = AxisLock.None;
 
         OnPathUpdated?.Invoke(currentPath);
@@ -508,21 +832,27 @@ public class BoardManager : MonoBehaviour
 
     private bool ShouldClearCurrentPath()
     {
-        if (pathNumberCount < 2)
-            return false;
-
-        return pathSum == 10;
+        if (pathNumberCount < MIN_NUMBERS) return false;
+        return pathSum == TARGET_SUM;
     }
 
-    // =====================================================
-    // 종료 조건 & DFS 기반 합 10 경로 존재 여부 탐색
-    // =====================================================
+    // =========================
+    //  캐시 관리
+    // =========================
+
+    private void InvalidateCache()
+    {
+        hasValidMoveCacheValid = false;
+    }
+
+    // =========================
+    //  종료 판정
+    // =========================
 
     private void CheckEndConditions()
     {
         bool anyNumber = false;
-
-        for (int y = 0; y < n; y++)
+        for (int y = 0; y < n && !anyNumber; y++)
         {
             for (int x = 0; x < n; x++)
             {
@@ -532,357 +862,213 @@ public class BoardManager : MonoBehaviour
                     break;
                 }
             }
-            if (anyNumber) break;
         }
 
-        // 1) 숫자가 하나도 없으면 → 다음 웨이브
         if (!anyNumber)
         {
-            Debug.Log("Board empty -> next wave");
+            Debug.Log("[EndCheck] All cleared → next wave");
             OnNoMoreMoves?.Invoke();
             return;
         }
 
-        // 2) 숫자는 남았는데 더 이상 합 10 경로가 없으면 → 다음 웨이브
-        //    (런타임에서는 기존처럼 "경로 1개 이상" 기준만 사용)
         if (!HasAnyValidMove())
         {
+            Debug.Log("[EndCheck] No valid moves → next wave");
             OnNoMoreMoves?.Invoke();
         }
     }
 
     private bool HasAnyValidMove()
     {
-        // 1) 현재 보드에서 숫자 노드 + 숫자 그래프 생성
-        System.Collections.Generic.List<int>[] numberGraph;
-        NumberNode[] nodes = BuildNumberGraph(out numberGraph);
+        if (hasValidMoveCacheValid)
+            return hasValidMoveCache;
 
-        if (nodes == null || nodes.Length == 0)
-            return false;
-
-        // 2) 숫자 그래프 위에서 "합 10, 숫자 2개 이상" 경로가 있는지 검사
-        return HasPathSum10OnGraph(nodes, numberGraph);
+        bool result = FindPathBFS(out _, stopAtFirst: true);
+        
+        hasValidMoveCache = result;
+        hasValidMoveCacheValid = true;
+        
+        return result;
     }
 
-    // 현재 boardValues에서 숫자칸만 모아 노드로 만들고,
-    // "공백만 이용해서 서로 이어질 수 있는 숫자들"을 간선으로 하는 그래프를 만든다.
-    private NumberNode[] BuildNumberGraph(out System.Collections.Generic.List<int>[] graph)
+    // =========================
+    //  BFS 기반 경로 탐색
+    // =========================
+
+    private struct PathState
     {
-        const int TARGET = 10;
+        public int x, y;
+        public int sum;
+        public int numberCount;
+        public List<Vector2Int> path;
+        public bool[,] visited;
 
-        // (x,y) -> 숫자 노드 인덱스 매핑
-        int[,] indexMap = new int[n, n];
+        public PathState(int x, int y, int sum, int count, bool[,] visited, List<Vector2Int> path)
+        {
+            this.x = x;
+            this.y = y;
+            this.sum = sum;
+            this.numberCount = count;
+            this.visited = visited;
+            this.path = path;
+        }
+    }
+
+    private bool FindPathBFS(out List<Vector2Int> foundPath, bool stopAtFirst = false)
+    {
+        foundPath = null;
+        
+        if (boardValues == null)
+            return false;
+
+        var startTime = Time.realtimeSinceStartup;
+        var queue = new Queue<PathState>();
+        List<Vector2Int> bestPath = null;
+        int bestLength = int.MaxValue;
+        int searchCount = 0;
+        const int MAX_SEARCH_COUNT = 10000;
+
         for (int y = 0; y < n; y++)
         {
             for (int x = 0; x < n; x++)
             {
-                indexMap[x, y] = -1;
+                int value = boardValues[x, y];
+                if (value <= 0 || value > TARGET_SUM)
+                    continue;
+
+                var visited = new bool[n, n];
+                visited[x, y] = true;
+                
+                var path = new List<Vector2Int> { new Vector2Int(x, y) };
+                queue.Enqueue(new PathState(x, y, value, 1, visited, path));
             }
         }
-
-        // 1) 숫자 노드 수집
-        System.Collections.Generic.List<NumberNode> nodeList =
-            new System.Collections.Generic.List<NumberNode>();
-
-        for (int y = 0; y < n; y++)
-        {
-            for (int x = 0; x < n; x++)
-            {
-                int v = boardValues[x, y];
-                if (v <= 0 || v > TARGET)
-                    continue;   // 공백 또는 10 초과 숫자는 무시
-
-                int idx = nodeList.Count;
-                indexMap[x, y] = idx;
-                nodeList.Add(new NumberNode
-                {
-                    X = x,
-                    Y = y,
-                    Value = v
-                });
-            }
-        }
-
-        int nodeCount = nodeList.Count;
-
-        // 노드가 하나도 없으면 비어 있는 그래프 반환
-        graph = new System.Collections.Generic.List<int>[nodeCount];
-        for (int i = 0; i < nodeCount; i++)
-            graph[i] = new System.Collections.Generic.List<int>();
-
-        if (nodeCount == 0)
-            return nodeList.ToArray();
-
-        // 2) 각 숫자 노드에서 BFS 돌려서 "공백만 이용해 도달 가능한 숫자 노드" 찾기
-        bool[,] visited = new bool[n, n];
-        System.Collections.Generic.Queue<Vector2Int> q =
-            new System.Collections.Generic.Queue<Vector2Int>();
 
         int[] dx = { 1, -1, 0, 0 };
         int[] dy = { 0, 0, 1, -1 };
 
-        for (int i = 0; i < nodeCount; i++)
+        while (queue.Count > 0)
         {
-            // 방문 배열 초기화
-            System.Array.Clear(visited, 0, visited.Length);
-            q.Clear();
+            searchCount++;
+            
+            if (Time.realtimeSinceStartup - startTime > searchTimeoutSeconds)
+                break;
 
-            NumberNode start = nodeList[i];
-            int sx = start.X;
-            int sy = start.Y;
+            if (searchCount > MAX_SEARCH_COUNT)
+                break;
 
-            // 시작 숫자칸에서 BFS 시작
-            visited[sx, sy] = true;
-            q.Enqueue(new Vector2Int(sx, sy));
+            var state = queue.Dequeue();
 
-            while (q.Count > 0)
+            if (state.path.Count >= bestLength)
+                continue;
+
+            for (int dir = 0; dir < 4; dir++)
             {
-                Vector2Int p = q.Dequeue();
-                int px = p.x;
-                int py = p.y;
+                int nx = state.x + dx[dir];
+                int ny = state.y + dy[dir];
 
-                for (int dir = 0; dir < 4; dir++)
+                if (nx < 0 || nx >= n || ny < 0 || ny >= n)
+                    continue;
+
+                if (state.visited[nx, ny])
+                    continue;
+
+                int nextValue = boardValues[nx, ny];
+                
+                var newVisited = (bool[,])state.visited.Clone();
+                newVisited[nx, ny] = true;
+                
+                var newPath = new List<Vector2Int>(state.path) { new Vector2Int(nx, ny) };
+
+                if (nextValue <= 0)
                 {
-                    int nx = px + dx[dir];
-                    int ny = py + dy[dir];
-
-                    if (!IsInside(nx, ny))
-                        continue;
-
-                    if (visited[nx, ny])
-                        continue;
-
-                    int cell = boardValues[nx, ny];
-
-                    if (cell > 0)
+                    queue.Enqueue(new PathState(nx, ny, state.sum, state.numberCount, newVisited, newPath));
+                }
+                else
+                {
+                    int nextSum = state.sum + nextValue;
+                    
+                    if (nextSum == TARGET_SUM && state.numberCount + 1 >= MIN_NUMBERS)
                     {
-                        // 숫자칸: 시작 노드(i)가 아닌 다른 숫자면 간선 추가
-                        int idx2 = indexMap[nx, ny];
-                        if (idx2 >= 0 && idx2 != i)
+                        if (stopAtFirst)
                         {
-                            graph[i].Add(idx2);
+                            foundPath = newPath;
+                            return true;
                         }
-
-                        // 숫자칸은 통과하지 않고 여기서 끝 (벽처럼 취급)
-                        visited[nx, ny] = true;
-                        continue;
+                        
+                        if (newPath.Count < bestLength)
+                        {
+                            bestLength = newPath.Count;
+                            bestPath = newPath;
+                        }
                     }
-                    else
+                    else if (nextSum < TARGET_SUM)
                     {
-                        // 공백칸: 자유롭게 통과 가능
-                        visited[nx, ny] = true;
-                        q.Enqueue(new Vector2Int(nx, ny));
+                        queue.Enqueue(new PathState(nx, ny, nextSum, state.numberCount + 1, newVisited, newPath));
                     }
                 }
             }
         }
 
-        return nodeList.ToArray();
-    }
-
-    // 숫자 그래프 위에서 "합 10, 숫자 2개 이상, 숫자칸 중복 사용 X" 경로가 있는지 검사
-    private bool HasPathSum10OnGraph(
-        NumberNode[] nodes,
-        System.Collections.Generic.List<int>[] graph
-    )
-    {
-        const int TARGET = 10;
-
-        int nodeCount = nodes.Length;
-        if (nodeCount == 0)
-            return false;
-
-        bool[] visited = new bool[nodeCount];
-
-        for (int i = 0; i < nodeCount; i++)
+        if (bestPath != null)
         {
-            int v = nodes[i].Value;
-            if (v <= 0 || v > TARGET)
-                continue;
-
-            System.Array.Clear(visited, 0, visited.Length);
-            visited[i] = true;
-
-            if (DFSGraph(i, v, 1, nodes, graph, visited))
-                return true;
-        }
-
-        return false;
-    }
-
-    // 깊이 우선 탐색으로 경로 존재 여부 체크
-    private bool DFSGraph(
-        int currentIndex,
-        int currentSum,
-        int count,
-        NumberNode[] nodes,
-        System.Collections.Generic.List<int>[] graph,
-        bool[] visited
-    )
-    {
-        const int TARGET = 10;
-
-        // 합 10 & 숫자 2개 이상이면 성공
-        if (currentSum == TARGET && count >= 2)
-            return true;
-
-        // 합이 이미 10 이상이면 더 진행할 필요 없음
-        if (currentSum >= TARGET)
-            return false;
-
-        // 숫자는 최소 1이라, 길이가 10을 넘어가면 어차피 10을 넘길 수밖에 없음
-        if (count >= TARGET)
-            return false;
-
-        var neighbors = graph[currentIndex];
-        if (neighbors == null || neighbors.Count == 0)
-            return false;
-
-        for (int i = 0; i < neighbors.Count; i++)
-        {
-            int next = neighbors[i];
-            if (visited[next])
-                continue;
-
-            int nextValue = nodes[next].Value;
-            int nextSum = currentSum + nextValue;
-            if (nextSum > TARGET)
-                continue;
-
-            visited[next] = true;
-            if (DFSGraph(next, nextSum, count + 1, nodes, graph, visited))
-                return true;
-            visited[next] = false;
-        }
-
-        return false;
-    }
-
-
-    private bool HasAtLeastNValidMoves(int requiredStarts)
-    {
-        const int TARGET = 10;
-        int found = 0;
-
-        // 혹시라도 n이 바뀌었는데 dfsVisited가 안 맞으면 다시 생성
-        if (dfsVisited == null || dfsVisited.GetLength(0) != n || dfsVisited.GetLength(1) != n)
-            dfsVisited = new bool[n, n];
-
-        for (int y = 0; y < n; y++)
-        {
-            for (int x = 0; x < n; x++)
-            {
-                int v = boardValues[x, y];
-
-                // 숫자 칸만 시작점 후보
-                if (v <= 0 || v > TARGET)
-                    continue;
-
-                // 방문 배열 초기화만 하고 재사용 (new 금지)
-                Array.Clear(dfsVisited, 0, dfsVisited.Length);
-
-                if (DFSHasPath(x, y, dfsVisited, v, 1))
-                {
-                    found++;
-                    if (found >= requiredStarts)
-                        return true;    // 조기 종료
-                }
-            }
-        }
-
-        return false;
-    }
-
-    private bool DFSHasPath(int x, int y, bool[,] visited, int currentSum, int numberCount)
-    {
-        const int TARGET = 10;
-
-        visited[x, y] = true;
-
-        dfsStepCount++;
-        if (dfsStepCount > dfsStepLimit)
-        {
-            // 한도를 남겨두고 싶다면 최소한 방문 해제는 하고 나가야 함
-            visited[x, y] = false;
-            return false;
-        }
-
-        // 합 10 달성 & 숫자 2개 이상 → 성공
-        if (currentSum == TARGET && numberCount >= 2)
-        {
-            visited[x, y] = false;
+            foundPath = bestPath;
             return true;
         }
 
-        // 숫자는 양수뿐이라 currentSum > 10이면 더 가도 소용 없음
-        if (currentSum >= TARGET)
-        {
-            visited[x, y] = false;
-            return false;
-        }
-
-        int[] dx = { 1, -1, 0, 0 };
-        int[] dy = { 0, 0, 1, -1 };
-
-        for (int dir = 0; dir < 4; dir++)
-        {
-            int nx = x + dx[dir];
-            int ny = y + dy[dir];
-
-            if (nx < 0 || nx >= n || ny < 0 || ny >= n)
-                continue;
-
-            if (visited[nx, ny])
-                continue;
-
-            int v = boardValues[nx, ny];
-
-            if (v <= 0)
-            {
-                // 공백: 합/개수 그대로 진행
-                if (DFSHasPath(nx, ny, visited, currentSum, numberCount))
-                {
-                    visited[x, y] = false;
-                    return true;
-                }
-            }
-            else
-            {
-                int nextSum = currentSum + v;
-                if (nextSum > TARGET)
-                    continue;
-
-                // ★ 여기 순서 매우 중요: (currentSum = nextSum, numberCount = numberCount+1)
-                if (DFSHasPath(nx, ny, visited, nextSum, numberCount + 1))
-                {
-                    visited[x, y] = false;
-                    return true;
-                }
-            }
-        }
-
-        visited[x, y] = false;
         return false;
     }
 
-    // =====================================================
-    // 힌트 기능 (기존)
-    // =====================================================
+    // =========================
+    //  힌트
+    // =========================
 
     public List<CellView> FindHintPath()
     {
-        var posPath = FindShortestSum10PathPositions();
-        if (posPath == null || posPath.Count == 0 || cells == null)
+        if (cells == null || boardValues == null)
             return null;
 
-        var result = new List<CellView>(posPath.Count);
-        foreach (var p in posPath)
+        List<Vector2Int> pathPositions;
+        
+        if (useQuickHint)
         {
-            var cv = cells[p.x, p.y];
-            if (cv != null)
-                result.Add(cv);   // 숫자/공백 모두 포함해서 경로 전체를 보여줌
+            if (!FindPathBFS(out pathPositions, stopAtFirst: true))
+                return null;
         }
+        else
+        {
+            if (!FindPathBFS(out pathPositions, stopAtFirst: false))
+                return null;
+        }
+
+        if (pathPositions == null || pathPositions.Count == 0)
+            return null;
+
+        var result = new List<CellView>(pathPositions.Count);
+        foreach (var pos in pathPositions)
+        {
+            var cell = cells[pos.x, pos.y];
+            if (cell != null)
+                result.Add(cell);
+        }
+
         return result;
+    }
+
+    public void ShowHint(float flashDuration = 1.0f)
+    {
+        CancelHint();
+
+        var path = FindHintPath();
+
+        if (path == null || path.Count == 0)
+        {
+            Debug.Log("[Hint] No valid path found");
+            return;
+        }
+
+        currentHintCells = path;
+        hintCoroutine = StartCoroutine(HintRoutine(flashDuration));
     }
 
     public void CancelHint()
@@ -896,514 +1082,19 @@ public class BoardManager : MonoBehaviour
         if (currentHintCells != null)
         {
             foreach (var cell in currentHintCells)
-            {
-                // 힌트 전용 하이라이트 끄기 (아래에서 설명)
                 cell.SetHintHighlight(false);
-            }
 
             currentHintCells = null;
         }
     }
 
-    private List<Vector2Int> FindShortestSum10PathPositions()
+    private IEnumerator HintRoutine(float duration)
     {
-        const int TARGET = 10;
-
-        List<Vector2Int> bestPath = null;
-        int bestLen = int.MaxValue;
-
-        if (boardValues == null)
-            return null;
-
-        int size = n;
-        bool[,] visited = new bool[size, size];
-        var currentPath = new List<Vector2Int>();
-
-        for (int y = 0; y < size; y++)
-        {
-            for (int x = 0; x < size; x++)
-            {
-                int v = boardValues[x, y];
-                // 숫자 칸만 시작점
-                if (v <= 0 || v > TARGET)
-                    continue;
-
-                // visited / currentPath 매번 초기화
-                Array.Clear(visited, 0, visited.Length);
-                currentPath.Clear();
-
-                DFSHintShortest(
-                    x, y,
-                    visited,
-                    v,               // currentSum
-                    1,               // numberCount
-                    currentPath,
-                    ref bestPath,
-                    ref bestLen
-                );
-            }
-        }
-
-        return bestPath;
-    }
-
-    private void DFSHintShortest(
-        int x,
-        int y,
-        bool[,] visited,
-        int currentSum,
-        int numberCount,
-        List<Vector2Int> currentPath,
-        ref List<Vector2Int> bestPath,
-        ref int bestLen
-    )
-    {
-        const int TARGET = 10;
-        int size = n;
-
-        visited[x, y] = true;
-        currentPath.Add(new Vector2Int(x, y));
-
-        // 현재까지의 경로가 이미 best보다 길면 더 볼 필요 없음
-        if (currentPath.Count >= bestLen)
-        {
-            visited[x, y] = false;
-            currentPath.RemoveAt(currentPath.Count - 1);
-            return;
-        }
-
-        // 합 10 만족 & 숫자 2개 이상이면 후보 갱신
-        if (currentSum == TARGET && numberCount >= 2)
-        {
-            bestLen = currentPath.Count;
-            bestPath = new List<Vector2Int>(currentPath);
-
-            visited[x, y] = false;
-            currentPath.RemoveAt(currentPath.Count - 1);
-            return;
-        }
-
-        // 숫자는 양수만 있으니까, 합이 이미 10 이상이면 더 진행해 봐야 의미 없음
-        if (currentSum >= TARGET)
-        {
-            visited[x, y] = false;
-            currentPath.RemoveAt(currentPath.Count - 1);
-            return;
-        }
-
-        int[] dx = { 1, -1, 0, 0 };
-        int[] dy = { 0, 0, 1, -1 };
-
-        for (int dir = 0; dir < 4; dir++)
-        {
-            int nx = x + dx[dir];
-            int ny = y + dy[dir];
-
-            if (nx < 0 || nx >= size || ny < 0 || ny >= size)
-                continue;
-
-            if (visited[nx, ny])
-                continue;
-
-            int v = boardValues[nx, ny];
-
-            if (v <= 0)
-            {
-                // 공백 칸은 합/개수 그대로
-                DFSHintShortest(nx, ny, visited, currentSum, numberCount,
-                    currentPath, ref bestPath, ref bestLen);
-            }
-            else
-            {
-                int nextSum = currentSum + v;
-                if (nextSum > TARGET)
-                    continue;
-
-                DFSHintShortest(nx, ny, visited, nextSum, numberCount + 1,
-                    currentPath, ref bestPath, ref bestLen);
-            }
-        }
-
-        visited[x, y] = false;
-        currentPath.RemoveAt(currentPath.Count - 1);
-    }
-
-    public void ShowHint(float flashDuration = 1.0f)
-    {
-        // 기존 힌트가 있으면 먼저 지움
-        CancelHint();
-
-        var path = FindHintPath();
-        if (path == null || path.Count == 0)
-            return;
-
-        currentHintCells = path;
-        hintCoroutine = StartCoroutine(HintRoutine(flashDuration));
-    }
-
-    private System.Collections.IEnumerator HintRoutine(float duration)
-    {
-        // 힌트 전용 색/스타일로 표시
         foreach (var cell in currentHintCells)
             cell.SetHintHighlight(true);
 
         yield return new WaitForSeconds(duration);
 
-        // 일정 시간 후 자동으로 힌트 제거
         CancelHint();
-    }
-
-    // =====================================================
-    // "쉬운 인접쌍" 난이도 조절
-    // =====================================================
-
-    // 합 10인 인접(상하좌우) 숫자 쌍 개수를 줄여서 난이도 조절
-    private void LimitEasyPairs()
-    {
-        const int TARGET = 10;
-
-        // 3x3, 4x4는 초반 구간이라 난이도 조절 끄는 걸 추천
-        if (n <= 4)
-            return;
-
-        if (maxEasyAdjacentPairs < 0)
-            return;
-
-        int safety = 0;
-
-        while (safety++ < 200)
-        {
-            // 1) 현재 보드에서 "쉬운 쌍" 전체 수집
-            List<(int x1, int y1, int x2, int y2)> pairs = CollectEasyAdjacentPairs(TARGET);
-
-            if (pairs.Count <= maxEasyAdjacentPairs)
-                break;  // 목표 이하로 줄었으면 종료
-
-            // 2) 그 중 하나를 랜덤으로 골라서 깨기
-            var p = pairs[UnityEngine.Random.Range(0, pairs.Count)];
-
-            int x1 = p.x1, y1 = p.y1;
-            int x2 = p.x2, y2 = p.y2;
-
-            // 두 칸 중 어느 쪽을 바꿀지 랜덤 선택
-            bool changeFirst = UnityEngine.Random.value < 0.5f;
-            int cx = changeFirst ? x1 : x2;
-            int cy = changeFirst ? y1 : y2;
-
-            // 바꾸지 않는 이웃 값과의 합10도 모두 피해야 하므로,
-            // (cx,cy) 주변 네 방향 이웃을 보고 "금지 값"을 계산한다.
-            int newValue = PickNonEasyValueForCell(cx, cy, TARGET);
-
-            boardValues[cx, cy] = newValue;
-        }
-
-        if (safety >= 200)
-        {
-            Debug.LogWarning("LimitEasyPairs: safety limit reached, board may still have more easy pairs than desired.");
-        }
-    }
-
-    // 현재 보드에서 상하좌우 인접한 두 칸의 합이 TARGET인 모든 쌍 수집
-    private List<(int x1, int y1, int x2, int y2)> CollectEasyAdjacentPairs(int TARGET)
-    {
-        var pairs = new List<(int x1, int y1, int x2, int y2)>();
-
-        for (int y = 0; y < n; y++)
-        {
-            for (int x = 0; x < n; x++)
-            {
-                int v = boardValues[x, y];
-                if (v <= 0) continue;
-
-                // 오른쪽
-                if (x + 1 < n)
-                {
-                    int v2 = boardValues[x + 1, y];
-                    if (v2 > 0 && v + v2 == TARGET)
-                        pairs.Add((x, y, x + 1, y));
-                }
-
-                // 위쪽 (중복 방지: 한 방향만 체크)
-                if (y + 1 < n)
-                {
-                    int v2 = boardValues[x, y + 1];
-                    if (v2 > 0 && v + v2 == TARGET)
-                        pairs.Add((x, y, x, y + 1));
-                }
-            }
-        }
-
-        return pairs;
-    }
-
-    // (cx,cy)에 들어갈 새 값을 고른다.
-    // - 1..k 범위
-    // - 네 방향 이웃 어떤 칸과도 합이 TARGET이 되지 않도록 선택
-    private int PickNonEasyValueForCell(int cx, int cy, int TARGET)
-    {
-        // 주변 네 방향 이웃 값 수집
-        int[] dx = { 1, -1, 0, 0 };
-        int[] dy = { 0, 0, 1, -1 };
-
-        // 금지 값 집합 (합10 쌍을 만드는 값들)
-        HashSet<int> forbidden = new HashSet<int>();
-
-        for (int dir = 0; dir < 4; dir++)
-        {
-            int nx = cx + dx[dir];
-            int ny = cy + dy[dir];
-
-            if (nx < 0 || nx >= n || ny < 0 || ny >= n)
-                continue;
-
-            int neighbor = boardValues[nx, ny];
-            if (neighbor > 0)
-            {
-                int bad = TARGET - neighbor;
-                if (bad >= 1 && bad <= k)
-                    forbidden.Add(bad);
-            }
-        }
-
-        // 1..k 중에서 forbidden에 없는 값들 후보
-        List<int> candidates = new List<int>();
-        for (int v = 1; v <= k; v++)
-        {
-            if (!forbidden.Contains(v))
-                candidates.Add(v);
-        }
-
-        if (candidates.Count == 0)
-        {
-            // 그냥 아무 값이나 반환 (이 경우 난이도 제어가 조금 깨질 뿐, 게임은 돌아감)
-            return UnityEngine.Random.Range(1, k + 1);
-        }
-
-        int idx = UnityEngine.Random.Range(0, candidates.Count);
-        return candidates[idx];
-    }
-
-    // =====================================================
-    // 생성용: "실제로 몇 번 지울 수 있는지" 계산
-    // =====================================================
-
-    /// <summary>
-    /// 보드 전체에서 "합 10"이 되는 모든 경로(실제 드래그 경로)를 수집.
-    /// - 상하좌우 인접
-    /// - 숫자/공백 모두 경로 내 재방문 금지
-    /// - 숫자칸 최소 2개
-    /// </summary>
-    private void CollectAllSum10Paths(List<List<Vector2Int>> allPaths)
-    {
-        const int TARGET = 10;
-
-        if (boardValues == null)
-            return;
-
-        int size = n;
-        bool[,] visited = new bool[size, size];
-        var currentPath = new List<Vector2Int>();
-
-        for (int y = 0; y < size; y++)
-        {
-            for (int x = 0; x < size; x++)
-            {
-                int v = boardValues[x, y];
-                // 시작점은 숫자칸만
-                if (v <= 0 || v > TARGET)
-                    continue;
-
-                Array.Clear(visited, 0, visited.Length);
-                currentPath.Clear();
-
-                DFSCollectSum10Paths(
-                    x, y,
-                    visited,
-                    v,          // currentSum
-                    1,          // numberCount
-                    currentPath,
-                    allPaths
-                );
-            }
-        }
-    }
-
-    /// <summary>
-    /// 합10 경로 DFS 수집용 재귀.
-    /// </summary>
-    private void DFSCollectSum10Paths(
-        int x,
-        int y,
-        bool[,] visited,
-        int currentSum,
-        int numberCount,
-        List<Vector2Int> currentPath,
-        List<List<Vector2Int>> allPaths
-    )
-    {
-        const int TARGET = 10;
-        int size = n;
-
-        visited[x, y] = true;
-        currentPath.Add(new Vector2Int(x, y));
-
-        if (currentSum == TARGET && numberCount >= 2)
-        {
-            allPaths.Add(new List<Vector2Int>(currentPath));
-
-            visited[x, y] = false;
-            currentPath.RemoveAt(currentPath.Count - 1);
-            return;
-        }
-
-        if (currentSum >= TARGET)
-        {
-            visited[x, y] = false;
-            currentPath.RemoveAt(currentPath.Count - 1);
-            return;
-        }
-
-        int[] dx = { 1, -1, 0, 0 };
-        int[] dy = { 0, 0, 1, -1 };
-
-        for (int dir = 0; dir < 4; dir++)
-        {
-            int nx = x + dx[dir];
-            int ny = y + dy[dir];
-
-            if (nx < 0 || nx >= size || ny < 0 || ny >= size)
-                continue;
-
-            if (visited[nx, ny])
-                continue;
-
-            int v = boardValues[nx, ny];
-
-            if (v <= 0)
-            {
-                // 공백은 합/개수 유지
-                DFSCollectSum10Paths(nx, ny, visited, currentSum, numberCount,
-                    currentPath, allPaths);
-            }
-            else
-            {
-                int nextSum = currentSum + v;
-                if (nextSum > TARGET)
-                    continue;
-
-                DFSCollectSum10Paths(nx, ny, visited, nextSum, numberCount + 1,
-                    currentPath, allPaths);
-            }
-        }
-
-        visited[x, y] = false;
-        currentPath.RemoveAt(currentPath.Count - 1);
-    }
-
-    /// <summary>
-    /// 합10 경로 리스트가 주어졌을 때,
-    /// 서로 숫자칸이 겹치지 않게 고를 수 있는 경로의 최대 개수.
-    /// (= 한 웨이브에서 이론적으로 최대 몇 번 지울 수 있는지)
-    /// </summary>
-    private int GetMaxDisjointClearablePaths(List<List<Vector2Int>> allPaths)
-    {
-        int pathCount = allPaths.Count;
-        if (pathCount == 0)
-            return 0;
-
-        var numericSets = new List<HashSet<Vector2Int>>(pathCount);
-        for (int i = 0; i < pathCount; i++)
-        {
-            var set = new HashSet<Vector2Int>();
-            foreach (var p in allPaths[i])
-            {
-                int v = boardValues[p.x, p.y];
-                if (v > 0) // 숫자칸만
-                    set.Add(p);
-            }
-            numericSets.Add(set);
-        }
-
-        int best = 0;
-        var usedCells = new HashSet<Vector2Int>();
-
-        BacktrackDisjointPaths(0, 0, numericSets, usedCells, ref best);
-
-        return best;
-    }
-
-    /// <summary>
-    /// 백트래킹으로 "겹치지 않는 경로 최대 개수" 탐색.
-    /// n <= 5일 때만 사용할 것이므로 현실적인 범위.
-    /// </summary>
-    private void BacktrackDisjointPaths(
-        int index,
-        int usedCount,
-        List<HashSet<Vector2Int>> numericSets,
-        HashSet<Vector2Int> usedCells,
-        ref int best
-    )
-    {
-        int total = numericSets.Count;
-
-        // 남은 모든 경로를 다 써도 best를 못 이기면 가지치기
-        if (usedCount + (total - index) <= best)
-            return;
-
-        if (index >= total)
-        {
-            if (usedCount > best)
-                best = usedCount;
-            return;
-        }
-
-        // 1) 현재 경로를 선택하지 않는 경우
-        BacktrackDisjointPaths(index + 1, usedCount, numericSets, usedCells, ref best);
-
-        // 2) 현재 경로를 선택하는 경우 (이미 사용 중인 숫자칸과 안 겹칠 때만)
-        var set = numericSets[index];
-        bool conflict = false;
-        foreach (var cell in set)
-        {
-            if (usedCells.Contains(cell))
-            {
-                conflict = true;
-                break;
-            }
-        }
-
-        if (!conflict)
-        {
-            foreach (var cell in set)
-                usedCells.Add(cell);
-
-            BacktrackDisjointPaths(index + 1, usedCount + 1, numericSets, usedCells, ref best);
-
-            foreach (var cell in set)
-                usedCells.Remove(cell);
-        }
-    }
-
-    /// <summary>
-    /// 보드가 "이론적으로 최소 requiredClears번은 지울 수 있는가?" 검사.
-    /// - n <= 5일 때만 정밀 계산 (실제 clear 가능한 최대 횟수 기준)
-    /// - n > 5에서는 기존 HasAtLeastNValidMoves(1)로 대충만 체크 (성능 고려)
-    /// </summary>
-    private bool HasAtLeastNClearablePathsForGeneration(int requiredClears)
-    {
-        if (n > 5)
-        {
-            dfsStepCount = 0;
-            return HasAtLeastNValidMoves(1);
-        }
-
-        var allPaths = new List<List<Vector2Int>>();
-        CollectAllSum10Paths(allPaths);
-
-        int maxClearable = GetMaxDisjointClearablePaths(allPaths);
-
-        Debug.Log($"[Generation] n={n}, totalPaths={allPaths.Count}, maxClearable={maxClearable}");
-
-        return maxClearable >= requiredClears;
     }
 }
