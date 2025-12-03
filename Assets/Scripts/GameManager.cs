@@ -9,6 +9,11 @@ public class GameManager : MonoBehaviour
     [Header("Game Settings")]
     [SerializeField] private float gameDuration = 100f;  // 100초
 
+    [Header("Board Size Settings")]
+    [SerializeField] private int startBoardSize = 3;          // 시작 크기 (3x3)
+    [SerializeField, Range(2, 10)]
+    private int maxBoardSize = 10;                            // 최대 크기 (10x10)
+
     [Header("Hint Settings")]
     [SerializeField] private float hintIdleThreshold = 5f;     // n초 동안 "10을 못 만든" 상태면 힌트
     [SerializeField] private float hintFlashDuration = 1.0f;   // 힌트 반짝이는 시간
@@ -16,9 +21,9 @@ public class GameManager : MonoBehaviour
     private float remainingTime;
     private bool isRunning = false;
 
-    private int currentBoardSize = 3;   // 3x3 시작
+    private int currentBoardSize;   // 현재 보드 한 변 크기
     private int score = 0;
-    private int bestScore = 0;          // 최고 기록
+    private int bestScore = 0;      // 최고 기록
 
     // "마지막으로 합 10을 성공한 이후" 경과 시간
     private float idleTimer = 0f;
@@ -48,7 +53,6 @@ public class GameManager : MonoBehaviour
         // 보드 이벤트 구독
         boardManager.OnNoMoreMoves  += HandleNoMoreMoves;
         boardManager.OnCellsRemoved += HandleCellsRemoved;
-        // OnPathUpdated 같은 "입력 기반" 이벤트는 더 이상 구독하지 않음
 
         bestScore = PlayerPrefs.GetInt("BestScore", 0);
     }
@@ -86,10 +90,8 @@ public class GameManager : MonoBehaviour
         }
 
         // ---------- 힌트용 idle 타이머 ----------
-        // "마지막으로 10을 만든 이후" 시간이 계속 증가
         idleTimer += Time.deltaTime;
 
-        // 일정 시간 동안 10을 못 만들었고, 아직 힌트를 안 보여줬으면 힌트 발동
         if (!hintShownForCurrentIdle && idleTimer >= hintIdleThreshold)
         {
             var hintPath = boardManager.FindHintPath();
@@ -115,8 +117,8 @@ public class GameManager : MonoBehaviour
 
         isRunning = true;
 
-        // 시작 보드는 3x3
-        currentBoardSize = 3;
+        // 시작 보드 크기 설정 (2~maxBoardSize 사이로 클램프)
+        currentBoardSize = Mathf.Clamp(startBoardSize, 2, maxBoardSize);
         boardManager.SetupBoardWithSize(currentBoardSize);
 
         ResetIdleTimer();
@@ -134,7 +136,6 @@ public class GameManager : MonoBehaviour
             PlayerPrefs.Save();
         }
 
-        // 최종 점수 알림
         OnGameOver?.Invoke(score);
 
         Debug.Log($"Game Over. Final Score = {score}, Best = {bestScore}");
@@ -177,13 +178,14 @@ public class GameManager : MonoBehaviour
         if (!isRunning)
             return;
 
-        if (currentBoardSize < 8)
+        // 10x10까지 1씩 증가, 이후에는 고정
+        if (currentBoardSize < maxBoardSize)
         {
             currentBoardSize++;
         }
         else
         {
-            currentBoardSize = 8;
+            currentBoardSize = maxBoardSize;
         }
 
         boardManager.SetupBoardWithSize(currentBoardSize);
