@@ -5,9 +5,10 @@ using UnityEngine;
 public class GameManager : MonoBehaviour
 {
     [SerializeField] private BoardManager boardManager;
+    [SerializeField] private BoardSettingManager boardSettingManager;
 
     [Header("Game Settings")]
-    [SerializeField] private float gameDuration = 100f;  // 100초
+    [SerializeField] private float gameDuration = 20f;  // 100초
 
     [Header("Hint Settings")]
     [SerializeField] private float hintIdleThreshold = 5f;
@@ -23,14 +24,18 @@ public class GameManager : MonoBehaviour
     private float idleTimer = 0f;
     private bool hintShownForCurrentIdle = false;
 
-    public Action<int>   OnScoreChanged;
+    public Action<int> OnScoreChanged;
+    public Action<int> OnComboChanged;
     public Action<float> OnTimeChanged;
-    public Action<int>   OnGameOver;
+    public Action<int> OnGameOver;
 
-    public int   CurrentScore         => score;
+    public int CurrentScore => score;
     public float CurrentRemainingTime => remainingTime;
-    public int   BestScore            => bestScore;
+    public int BestScore => bestScore;
+    public GameObject floatingText;
+    public GameObject textGroup;
 
+    public int combo = 0;
     private void Awake()
     {
         if (boardManager == null)
@@ -42,7 +47,7 @@ public class GameManager : MonoBehaviour
             return;
         }
 
-        boardManager.OnNoMoreMoves  += HandleNoMoreMoves;
+        boardManager.OnNoMoreMoves += HandleNoMoreMoves;
         boardManager.OnCellsRemoved += HandleCellsRemoved;
 
         bestScore = PlayerPrefs.GetInt("BestScore", 0);
@@ -52,7 +57,7 @@ public class GameManager : MonoBehaviour
     {
         if (boardManager != null)
         {
-            boardManager.OnNoMoreMoves  -= HandleNoMoreMoves;
+            boardManager.OnNoMoreMoves -= HandleNoMoreMoves;
             boardManager.OnCellsRemoved -= HandleCellsRemoved;
         }
     }
@@ -60,8 +65,8 @@ public class GameManager : MonoBehaviour
     private void Start()
     {
         // 자동으로 게임을 시작하지 않는다.
-        isRunning     = false;
-        score         = 0;
+        isRunning = false;
+        score = 0;
         remainingTime = gameDuration;
 
         OnScoreChanged?.Invoke(score);
@@ -95,6 +100,7 @@ public class GameManager : MonoBehaviour
             if (hintPath != null && hintPath.Count > 0)
             {
                 boardManager.ShowHint(hintFlashDuration);
+                combo = 0;
                 hintShownForCurrentIdle = true;
             }
         }
@@ -130,7 +136,7 @@ public class GameManager : MonoBehaviour
         isRunning = true;
 
         currentBoardSize = 3;
-        boardManager.SetupBoardWithSize(currentBoardSize);
+        boardSettingManager.SetupBoardWithSize(currentBoardSize);
 
         ResetIdleTimer();
     }
@@ -166,7 +172,13 @@ public class GameManager : MonoBehaviour
         if (gained <= 0)
             return;
 
-        score += gained;
+        combo++;
+        score += gained + combo;
+        GameObject text = Instantiate(floatingText, textGroup.transform);
+        text.GetComponent<RectTransform>().anchoredPosition = new Vector2(140, 380);
+        text.GetComponent<TextFloating>().SetCondition("+" + (gained + combo).ToString());
+        remainingTime += 1;
+        OnComboChanged?.Invoke(combo);
         OnScoreChanged?.Invoke(score);
 
         ResetIdleTimer();
@@ -186,7 +198,7 @@ public class GameManager : MonoBehaviour
             currentBoardSize = 10;
         }
 
-        boardManager.SetupBoardWithSize(currentBoardSize);
+        boardSettingManager.SetupBoardWithSize(currentBoardSize);
         ResetIdleTimer();
     }
 }

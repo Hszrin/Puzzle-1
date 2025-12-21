@@ -7,6 +7,7 @@ public class UIHud : MonoBehaviour
     [SerializeField] private GameManager gameManager;
     [SerializeField] private TMP_Text scoreText;
     [SerializeField] private TMP_Text timeText;
+    [SerializeField] private TMP_Text comboText;
 
     private void Awake()
     {
@@ -24,10 +25,12 @@ public class UIHud : MonoBehaviour
         // 이벤트 구독
         gameManager.OnScoreChanged += HandleScoreChanged;
         gameManager.OnTimeChanged += HandleTimeChanged;
+        gameManager.OnComboChanged += HandleComboChanged;
 
-         // ★ 초기값 한 번 강제 반영
+        // ★ 초기값 한 번 강제 반영
         HandleScoreChanged(gameManager.CurrentScore);
         HandleTimeChanged(gameManager.CurrentRemainingTime);
+        HandleComboChanged(gameManager.combo);
 
         // 이미 GameManager가 내부에서 초기값을 세팅했다면,
         // 바로 한 번 갱신해주고 싶으면 GameManager에 프로퍼티를 만들어서 읽으면 된다.
@@ -47,6 +50,13 @@ public class UIHud : MonoBehaviour
     {
         if (scoreText != null)
             scoreText.text = $"Score : {newScore}";
+    }
+    // 점수 변경 이벤트 콜백
+    private void HandleComboChanged(int newCombo)
+    {
+        if(newCombo <= 1)comboText.enabled = false;
+        else comboText.enabled = true;
+        comboText.text = $"Combo : {newCombo}";
     }
 
     private void HandleTimeChanged(float remainingTime)

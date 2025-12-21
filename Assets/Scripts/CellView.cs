@@ -13,12 +13,12 @@ public class CellView : MonoBehaviour, IPointerDownHandler, IPointerEnterHandler
     [SerializeField] private TextMeshProUGUI numberText;
 
     [Header("Colors")]
-    [SerializeField] private Color normalColor    = new Color(0f, 0f, 0f, 0f);          // 기본: 완전 투명
+    [SerializeField] private Color normalColor    = new Color(0f, 0f, 0f, 0f);             // 기본: 완전 투명
     [SerializeField] private Color selectionColor = new Color(0.30f, 0.55f, 0.98f, 0.35f); // 선택 하이라이트
     [SerializeField] private Color hintColor      = new Color(0.25f, 0.90f, 0.80f, 0.40f);
 
     [Header("Text Color")]
-    [SerializeField] private Color numberColor    = new Color(0.95f, 0.96f, 1f, 1f);    // 밝은 숫자 색 (다크모드용)
+    [SerializeField] private Color numberColor    = new Color(0.95f, 0.96f, 1f, 1f);       // 밝은 숫자 색 (다크모드용)
 
     private int value;          // -1 = 공백, 1~k = 숫자
     private BoardManager board;
@@ -36,7 +36,7 @@ public class CellView : MonoBehaviour, IPointerDownHandler, IPointerEnterHandler
         this.Y = y;
         SetValue(initialValue);
     }
-
+    
     public void SetValue(int newValue)
     {
         value = newValue;
@@ -45,7 +45,7 @@ public class CellView : MonoBehaviour, IPointerDownHandler, IPointerEnterHandler
         {
             numberText.text = value.ToString();
             numberText.enabled = true;
-            numberText.color = numberColor;   // ← 여기서 항상 밝은 색으로 강제
+            numberText.color = numberColor;
         }
         else
         {
@@ -106,13 +106,11 @@ public class CellView : MonoBehaviour, IPointerDownHandler, IPointerEnterHandler
 
     public void OnPointerDown(PointerEventData eventData)
     {
-        if (board != null)
-            board.OnCellPointerDown(this);
+        board.OnCellPointerDown(this);
     }
 
     public void OnPointerEnter(PointerEventData eventData)
     {
-        if (board != null && Input.GetMouseButton(0))
-            board.OnCellPointerEnter(this);
+        board.OnCellPointerEnter(this);
     }
 }
