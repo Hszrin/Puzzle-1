@@ -64,6 +64,10 @@ public class BoardManager : MonoBehaviour
                 lastProcessedTouchPosition = currentPos;
             }
         }
+        else if (Input.GetMouseButtonDown(0))
+        {
+            TrySmartFirstTouchOutsideBoard();
+        }
     }
 
     private void SetupFrameRate()

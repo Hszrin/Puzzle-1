@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.UI;
 using TMPro;
 
 public class UIHud : MonoBehaviour
@@ -8,6 +9,7 @@ public class UIHud : MonoBehaviour
     [SerializeField] private TMP_Text scoreText;
     [SerializeField] private TMP_Text timeText;
     [SerializeField] private TMP_Text comboText;
+    [SerializeField] private Slider timer;
 
     private void Awake()
     {
@@ -29,8 +31,8 @@ public class UIHud : MonoBehaviour
 
         // ★ 초기값 한 번 강제 반영
         HandleScoreChanged(gameManager.CurrentScore);
-        HandleTimeChanged(gameManager.CurrentRemainingTime);
-        HandleComboChanged(gameManager.combo);
+        HandleTimeChanged(gameManager.RemainingTime);
+        HandleComboChanged((int)gameManager.combo);
 
         // 이미 GameManager가 내부에서 초기값을 세팅했다면,
         // 바로 한 번 갱신해주고 싶으면 GameManager에 프로퍼티를 만들어서 읽으면 된다.
@@ -63,8 +65,8 @@ public class UIHud : MonoBehaviour
     {
         if (timeText != null)
         {
-            int t = Mathf.CeilToInt(remainingTime);
-            timeText.text = $"Time : {t}";
+            timeText.text = remainingTime.ToString("0.#");
+            timer.value = 30/remainingTime;
         }
     }
 }

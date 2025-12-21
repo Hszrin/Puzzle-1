@@ -4,6 +4,7 @@ using UnityEngine;
 using System.Linq;
 using System;
 using UnityEngine.UI;
+using System.Drawing;
 public class BoardSettingManager : MonoBehaviour
 {
     public int n;
@@ -14,6 +15,15 @@ public class BoardSettingManager : MonoBehaviour
     [SerializeField] private CellView cellPrefab;
     private PathFinder pathFinder = new();
     BoardManager boardManager;
+    Dictionary<int, float> scaleMap = new()
+    {
+        {8, 1f},
+        {7, 1.14f},
+        {6, 1.33f},
+        {5, 1.6f},
+        {4, 2f},
+        {3, 2.6f},
+    };
     void Awake()
     {
         gridLayout = boardRoot.GetComponent<GridLayoutGroup>();
@@ -308,17 +318,10 @@ public class BoardSettingManager : MonoBehaviour
 
     private void CreateVisualBoard()
     {
-        // 1. 셀 크기와 간격 계산
-        float cellSize = 85;
-        float spacing = 10;
-
-        // 2. GridLayout 설정
         if (gridLayout != null)
         {
             gridLayout.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
             gridLayout.constraintCount = n;
-            gridLayout.cellSize = new Vector2(cellSize, cellSize);
-            gridLayout.spacing = new Vector2(spacing, spacing);
         }
 
         // 3. 기존 셀 제거
@@ -340,5 +343,6 @@ public class BoardSettingManager : MonoBehaviour
                 cells[x, y] = cell;
             }
         }
+        boardRoot.localScale = Vector3.one * scaleMap[n];
     }
 }

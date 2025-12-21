@@ -8,13 +8,23 @@ public class GameManager : MonoBehaviour
     [SerializeField] private BoardSettingManager boardSettingManager;
 
     [Header("Game Settings")]
-    [SerializeField] private float gameDuration = 20f;  // 100초
+    [SerializeField] private float gameDuration = 30f;  // 30초
 
     [Header("Hint Settings")]
     [SerializeField] private float hintIdleThreshold = 5f;
     [SerializeField] private float hintFlashDuration = 1.0f;
+    public Vector2 scoreTextPosition = new();
+    public Vector2 timeTextPosition = new();
 
     private float remainingTime;
+    public float RemainingTime
+    {
+        get { return remainingTime; }
+        set
+        {
+            remainingTime = Mathf.Min(30, value);
+        }
+    }
     private bool isRunning = false;
 
     private int currentBoardSize = 3;   // 3x3 시작
@@ -30,12 +40,12 @@ public class GameManager : MonoBehaviour
     public Action<int> OnGameOver;
 
     public int CurrentScore => score;
-    public float CurrentRemainingTime => remainingTime;
     public int BestScore => bestScore;
     public GameObject floatingText;
+    public GameObject comboText;
     public GameObject textGroup;
 
-    public int combo = 0;
+    public float combo = 0;
     private void Awake()
     {
         if (boardManager == null)
@@ -67,10 +77,10 @@ public class GameManager : MonoBehaviour
         // 자동으로 게임을 시작하지 않는다.
         isRunning = false;
         score = 0;
-        remainingTime = gameDuration;
+        RemainingTime = gameDuration;
 
         OnScoreChanged?.Invoke(score);
-        OnTimeChanged?.Invoke(remainingTime);
+        OnTimeChanged?.Invoke(RemainingTime);
     }
 
     private void Update()
@@ -79,13 +89,13 @@ public class GameManager : MonoBehaviour
             return;
 
         // ----- 게임 타이머 -----
-        remainingTime -= Time.deltaTime;
-        if (remainingTime < 0f)
-            remainingTime = 0f;
+        RemainingTime -= Time.deltaTime;
+        if (RemainingTime < 0f)
+            RemainingTime = 0f;
 
-        OnTimeChanged?.Invoke(remainingTime);
+        OnTimeChanged?.Invoke(RemainingTime);
 
-        if (remainingTime <= 0f)
+        if (RemainingTime <= 0f)
         {
             EndRun();
             return;
@@ -101,6 +111,7 @@ public class GameManager : MonoBehaviour
             {
                 boardManager.ShowHint(hintFlashDuration);
                 combo = 0;
+                OnComboChanged?.Invoke((int)combo);
                 hintShownForCurrentIdle = true;
             }
         }
@@ -130,8 +141,8 @@ public class GameManager : MonoBehaviour
         score = 0;
         OnScoreChanged?.Invoke(score);
 
-        remainingTime = gameDuration;
-        OnTimeChanged?.Invoke(remainingTime);
+        RemainingTime = gameDuration;
+        OnTimeChanged?.Invoke(RemainingTime);
 
         isRunning = true;
 
@@ -173,12 +184,28 @@ public class GameManager : MonoBehaviour
             return;
 
         combo++;
-        score += gained + combo;
+        score += gained + Mathf.CeilToInt(combo / 10f);
+        Debug.Log($"기본 점수:{gained}, 콤보점수 {Mathf.CeilToInt(combo / 10f)}");
+
+
         GameObject text = Instantiate(floatingText, textGroup.transform);
-        text.GetComponent<RectTransform>().anchoredPosition = new Vector2(140, 380);
+        text.GetComponent<RectTransform>().anchoredPosition = scoreTextPosition;
         text.GetComponent<TextFloating>().SetCondition("+" + (gained + combo).ToString());
-        remainingTime += 1;
-        OnComboChanged?.Invoke(combo);
+
+        if (combo % 10 == 0)
+        {
+            GameObject comboTextCpy = Instantiate(comboText, textGroup.transform);
+            comboTextCpy.GetComponent<ComboTextFade>().SetCondition("Combo " + combo.ToString() + "!");
+        }
+
+
+        RemainingTime += 1 - (currentBoardSize - 3) * 0.05f;
+        GameObject timetext = Instantiate(floatingText, textGroup.transform);
+        timetext.GetComponent<RectTransform>().anchoredPosition = timeTextPosition;
+        timetext.GetComponent<TextFloating>().SetCondition("+" + (1 - (currentBoardSize - 3) * 0.05f).ToString());
+        OnComboChanged?.Invoke((int)combo);
+
+
         OnScoreChanged?.Invoke(score);
 
         ResetIdleTimer();
@@ -189,13 +216,13 @@ public class GameManager : MonoBehaviour
         if (!isRunning)
             return;
 
-        if (currentBoardSize < 10)
+        if (currentBoardSize < 8)
         {
             currentBoardSize++;
         }
         else
         {
-            currentBoardSize = 10;
+            currentBoardSize = 8;
         }
 
         boardSettingManager.SetupBoardWithSize(currentBoardSize);
