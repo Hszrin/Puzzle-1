@@ -61,6 +61,7 @@ public class BoardManager : MonoBehaviour
             Vector2 currentPos = Input.mousePosition;
             if (Vector2.Distance(currentPos, lastProcessedTouchPosition) > TOUCH_POSITION_THRESHOLD)
             {
+                TrySmartPathRecovery();
                 lastProcessedTouchPosition = currentPos;
             }
         }

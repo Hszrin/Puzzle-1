@@ -9,10 +9,13 @@ public class GameOverUI : MonoBehaviour
 
     [SerializeField] private GameObject gameOverRoot;   // GameOver 패널 루트
     [SerializeField] private GameObject inGameUIRoot;   // 보드 + HUD 루트
+    [SerializeField] private GameObject scoreButton;   // 보드 + HUD 루트
+    [SerializeField] private GameObject startButton;   // 보드 + HUD 루트
+    [SerializeField] private GameObject fastRestartButton;   // 보드 + HUD 루트
 
     [SerializeField] private TMP_Text finalScoreText;
-    [SerializeField] private TMP_Text bestScoreText;
     [SerializeField] private Button retryButton;
+    [SerializeField] private Button mainButton;
 
     private void Awake()
     {
@@ -28,35 +31,23 @@ public class GameOverUI : MonoBehaviour
 
         gameManager.OnGameOver += HandleGameOver;
 
-        if (retryButton != null)
-            retryButton.onClick.AddListener(OnRetryClicked);
-    }
-
-    private void OnDestroy()
-    {
-        if (gameManager != null)
-            gameManager.OnGameOver -= HandleGameOver;
-
-        if (retryButton != null)
-            retryButton.onClick.RemoveListener(OnRetryClicked);
+        retryButton.onClick.AddListener(OnRetryClicked);
+        mainButton.onClick.AddListener(OnMain);
     }
 
     private void HandleGameOver(int finalScore)
     {
-        if (inGameUIRoot != null)
-            inGameUIRoot.SetActive(false);
+        inGameUIRoot.SetActive(false);
 
-        if (gameOverRoot != null)
-            gameOverRoot.SetActive(true);
+        gameOverRoot.SetActive(true);
+        fastRestartButton.SetActive(false);
 
         if (finalScoreText != null)
             finalScoreText.text = $"Score : {finalScore}";
 
-        if (bestScoreText != null)
-            bestScoreText.text = $"Best : {gameManager.BestScore}";
     }
 
-    private void OnRetryClicked()
+    public void OnRetryClicked()
     {
         if (gameManager != null)
             gameManager.RestartRun();
@@ -66,5 +57,13 @@ public class GameOverUI : MonoBehaviour
 
         if (gameOverRoot != null)
             gameOverRoot.SetActive(false);
+        fastRestartButton.SetActive(true);
+    }
+    private void OnMain()
+    {
+        scoreButton.SetActive(true);
+        startButton.SetActive(true);
+        gameOverRoot.SetActive(false);
+        fastRestartButton.SetActive(false);
     }
 }

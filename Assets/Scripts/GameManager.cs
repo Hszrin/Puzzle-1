@@ -44,8 +44,11 @@ public class GameManager : MonoBehaviour
     public GameObject floatingText;
     public GameObject comboText;
     public GameObject textGroup;
+    public ScoreManager scoreManager;
+    public PersonalScoreManager personalScoreManager;
 
-    public float combo = 0;
+    public int combo = 0;
+    public int maxCombo = 0;
     private void Awake()
     {
         if (boardManager == null)
@@ -139,7 +142,10 @@ public class GameManager : MonoBehaviour
     private void StartNewRun()
     {
         score = 0;
+        combo = 0;
+        maxCombo = 0;
         OnScoreChanged?.Invoke(score);
+        OnComboChanged?.Invoke(score);
 
         RemainingTime = gameDuration;
         OnTimeChanged?.Invoke(RemainingTime);
@@ -156,13 +162,8 @@ public class GameManager : MonoBehaviour
     {
         isRunning = false;
 
-        if (score > bestScore)
-        {
-            bestScore = score;
-            PlayerPrefs.SetInt("BestScore", bestScore);
-            PlayerPrefs.Save();
-        }
-
+        scoreManager.SubmitScore(score, maxCombo);
+        personalScoreManager.SubmitScore(score, maxCombo);
         OnGameOver?.Invoke(score);
 
         Debug.Log($"Game Over. Final Score = {score}, Best = {bestScore}");
@@ -184,6 +185,7 @@ public class GameManager : MonoBehaviour
             return;
 
         combo++;
+        if(maxCombo < combo) maxCombo = combo;
         score += gained + Mathf.CeilToInt(combo / 10f);
         Debug.Log($"기본 점수:{gained}, 콤보점수 {Mathf.CeilToInt(combo / 10f)}");
 

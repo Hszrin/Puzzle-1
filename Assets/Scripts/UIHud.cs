@@ -38,15 +38,6 @@ public class UIHud : MonoBehaviour
         // 바로 한 번 갱신해주고 싶으면 GameManager에 프로퍼티를 만들어서 읽으면 된다.
         // (아래 3.에서 설명)
     }
-
-    private void OnDestroy()
-    {
-        if (gameManager == null) return;
-
-        gameManager.OnScoreChanged -= HandleScoreChanged;
-        gameManager.OnTimeChanged -= HandleTimeChanged;
-    }
-
     // 점수 변경 이벤트 콜백
     private void HandleScoreChanged(int newScore)
     {
@@ -66,7 +57,7 @@ public class UIHud : MonoBehaviour
         if (timeText != null)
         {
             timeText.text = remainingTime.ToString("0.#");
-            timer.value = 30/remainingTime;
+            timer.value = remainingTime/30;
         }
     }
 }
