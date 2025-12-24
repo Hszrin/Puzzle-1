@@ -22,7 +22,7 @@ public class GameManager : MonoBehaviour
         get { return remainingTime; }
         set
         {
-            remainingTime = Mathf.Min(32220, value);
+            remainingTime = Mathf.Min(30, value);
         }
     }
     private bool isRunning = false;
@@ -185,7 +185,7 @@ public class GameManager : MonoBehaviour
             return;
 
         combo++;
-        if(maxCombo < combo) maxCombo = combo;
+        if (maxCombo < combo) maxCombo = combo;
         score += gained + Mathf.CeilToInt(combo / 10f);
         Debug.Log($"기본 점수:{gained}, 콤보점수 {Mathf.CeilToInt(combo / 10f)}");
 
@@ -217,15 +217,7 @@ public class GameManager : MonoBehaviour
     {
         if (!isRunning)
             return;
-
-        if (currentBoardSize < 8)
-        {
-            currentBoardSize++;
-        }
-        else
-        {
-            currentBoardSize = 8;
-        }
+        currentBoardSize = UnityEngine.Random.Range(3, 7);
 
         boardSettingManager.SetupBoardWithSize(currentBoardSize);
         ResetIdleTimer();

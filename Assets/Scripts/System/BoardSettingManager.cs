@@ -29,10 +29,9 @@ public class BoardSettingManager : MonoBehaviour
         gridLayout = boardRoot.GetComponent<GridLayoutGroup>();
         boardManager = GetComponent<BoardManager>();
     }
-    public int Size;
     public void SetupBoardWithSize(int size)
     {
-        n = Size;
+        n = size;
         cells = new CellView[n, n];
         boardValues = new int[n, n];
 

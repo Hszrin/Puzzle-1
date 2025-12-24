@@ -133,6 +133,8 @@ public class CellView : MonoBehaviour, IPointerDownHandler, IPointerEnterHandler
     {
         if (selectAnimCoroutine != null)
             StopCoroutine(selectAnimCoroutine);
+
+        if(!gameObject.activeSelf) return;
         selectAnimCoroutine = StartCoroutine(SelectBounceCoroutine());
     }
 

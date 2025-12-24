@@ -2210,7 +2210,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   gameManager: {fileID: 2031228881}
-  scoreText: {fileID: 859508874}
+  scoreText: {fileID: 909978156}
   timeText: {fileID: 1790745983}
   comboText: {fileID: 597067873}
   timer: {fileID: 636135178}
@@ -7395,18 +7395,18 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   boardManager: {fileID: 2131152202}
   boardSettingManager: {fileID: 2131152203}
-  gameDuration: 22222
+  gameDuration: 30
   hintIdleThreshold: 5
   hintFlashDuration: 1
-  scoreTextPosition: {x: 0, y: 450}
-  timeTextPosition: {x: 330, y: 415}
+  scoreTextPosition: {x: 0, y: 700}
+  timeTextPosition: {x: -325, y: 590}
   floatingText: {fileID: 2863333370453327039, guid: 820e2386c2031ad4e8d7d97d2831f9ca, type: 3}
   comboText: {fileID: 508626466953625995, guid: 680545f8c9fe33248a2fd588c2281028, type: 3}
   textGroup: {fileID: 197248517}
   scoreManager: {fileID: 101460698}
   personalScoreManager: {fileID: 101460700}
-  combo: 0
-  maxCombo: 0
+  combo: 2
+  maxCombo: 2
 --- !u!4 &2031228882
 Transform:
   m_ObjectHideFlags: 0
